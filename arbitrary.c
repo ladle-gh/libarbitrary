@@ -4,90 +4,84 @@
 #include <string.h>
 #include <errno.h>
 
+#include <ladle/collect.h>
+#include <ladle/common/lib.h>
+#include <ladle/common/ptrcmp.h>
+
 #include "arbitrary.h"
 
-// Allows for null check in spite of 'nonnull' attribute
-#pragma GCC diagnostic ignored  "-Wnonnull-compare"
+/* Takes:   T, T; T is an integral type
+ * Returns: T
+ *
+ * Ceiling division
+ * Causes side-effects */
+#define ceil_div(num, denom)  ((num) / (denom) + !!((num) % (denom)))
 
-// ---- Basic API ----
+// ---- dflt_t Macros ----
 
-/* Error handler
- * For use within an if-statement
- * Preserves original cause of error */
-#define error(err, ret) {   \
-    if (!errno)             \
-        errno = err;        \
-    return ret;             \
-}
-
-// ---- dynfloat_t Macros ----
-
-/* Takes:   dynfloat_t *, size_t
+/* Takes:   dflt_t *, size_t
  * Returns: bitfield_t * (rvalue)
  * 
  * Reallocates memory within whole buffer
  * Returns pointer to reallocated buffer */
-#define dynfloat_wrealloc(value, resize)        \
-    ((value)->whole = realloc((value)->whole,   \
-    ((value)->wsize = (resize)) * sizeof(bitfield_t)))
+#define dflt_wrealloc(val, resize)        \
+    ((val)->whole = realloc((val)->whole,   \
+    ((val)->wsize = (resize)) * sizeof(bitfield_t)))
 
-/* Takes:   dynfloat_t *, size_t
+/* Takes:   dflt_t *, size_t
  * Returns: bitfield_t * (rvalue)
  *
  * Reallocates memory within decimal buffer
  * Returns pointer to reallocated buffer */
-#define dynfloat_drealloc(value, resize)            \
-    ((value)->decimal = realloc((value)->decimal,   \
-    ((value)->dsize = (resize)) * sizeof(bitfield_t)))
+#define dflt_drealloc(val, resize)            \
+    ((val)->decimal = realloc((val)->decimal,   \
+    ((val)->dsize = (resize)) * sizeof(bitfield_t)))
 
-// ---- dynint_t Macros ----
+// ---- dint_t Macros ----
 
-/* Takes:   dynint_t *
- * Returns: bitfield_t &
+/* Takes:   dint_t *
+ * Returns: bitfield_t (lvalue)
  *
  * Returns final bitfield in bit buffer (lvalue)
  * Causes side-effects */
-#define dynint_final(value) ((value)->bits[(value)->size - 1])
+#define dint_final(val) ((val)->bits[(val)->size - 1])
 
-/* Takes:   dynint_t *, dynint_t *
- * Returns: dynint_t * (lvalue)
+/* Takes:   T, where T is a signed integral
+ * Returns: dint_t * (rvalue)
+ *
+ * Creates a local instance of an integer from a signed integral val
+ * Returns pointer of result */
+#define dint_fromsi(signed_int)   (&(dint_t) {(bitfield_t[]) {signed_int}, 1})
+
+/* Takes:   T, where T is an unsigned integral
+ * Returns: dint_t * (rvalue)
+ *
+ * Creates a local instance of an integer from an unsigned integral val
+ * Returns pointer of result */
+#define dint_fromui(unsigned_int) (&(dint_t) {(bitfield_t[]) {0, unsigned_int}, 2})
+
+/* Takes:   dint_t *, dint_t *
+ * Returns: dint_t * (rvalue)
  *
  * Returns integer of largest bitfield size
  * Causes side-effects */
-#define dynint_maxsz(value1, value2)    \
-    ((value1)->size > (value2)->size ? (value1) : (value2))
+#define dint_maxsz(val1, val2)    \
+    ((val1)->size > (val2)->size ? (val1) : (val2))
 
 
-/* Takes:   dynint_t *, dynint_t *
- * Returns: dynint_t * (lvalue)
+/* Takes:   dint_t *, dint_t *
+ * Returns: dint_t * (rvalue)
  *
  * Returns integer of smallest bitfield size
  * Causes side-effects */
-#define dynint_minsz(value1, value2)    \
-    ((value1)->size < (value2)->size ? (value2) : (value1))
+#define dint_minsz(val1, val2)    \
+    ((val1)->size < (val2)->size ? (val2) : (val1))
 
-/* Takes:   dynint_t *, size_t
- * Returns: bitfield_t * (rvalue)
+/* Takes:   dint_t *
+ * Returns: bitfield_t (rvalue)
  *
- * Reallocates memory within bit buffer
- * Returns pointer to reallocated buffer
- * Causes side-effects */
-#define dynint_realloc(value, resize)       \
-    ((value)->bits = realloc((value)->bits, \
-    ((value)->size = (resize)) * sizeof(bitfield_t)))
-
-/* Takes:   dynint_t *
- * Returns: bool    (rvalue)
- *
- * Returns true if integer is negative
- * Causes side-effects */
-#define dynint_sign(value) ((value)->bits[(value)->size - 1] & SIGN_BIT)
-
-/* Takes:   dynint_t *
- * Returns: bitfield_t  (lvalue)
- *
- * Returns value dereferenced by iterator pointing to unallocated value */
-#define dynint_unalloc(value)   (BITFLD_MAX * dynint_sign(value))   
+ * Returns val dereferenced by iterator pointing to unallocated val */
+#define dint_unalloc(val)   (BITFLD_MAX * dint_isneg(val))   
 
 // ---- iterator_t Macros ----
 
@@ -117,7 +111,7 @@
  * Dereferences and increments iterator
  * Returns BITFLD_MAX * sign if current index is out-of-range */
 #define iter_nextif(iter, where, size, sign)    \
-    ((where) < (size) ? iter_next(iter) : BITFLD_MAX * sign)
+    ((where) < (size) ? iter_next(iter) : BITFLD_MAX * sign + !(++iter))
 
 /* Takes:   iterator_t, size_t, size_t
  * Returns: bitfield_t (rvalue)
@@ -125,7 +119,7 @@
  * Dereferences and decrements iterator
  * Returns BITFLD_MAX * sign if current index is out-of-range */
 #define iter_rnextif(iter, where, size, sign)   \
-    ((where) < (size) ? iter_next(iter) : BITFLD_MAX * sign)
+    ((where) < (size) ? iter_rnext(iter) : BITFLD_MAX * sign * !(--iter))
 
 /* Takes:   iterator_t, size_t, size_t
  * Returns: bitfield_t (rvalue)
@@ -151,7 +145,7 @@
  * Ignores sign bit
  * Causes side-effects */
 #define iter_getif(iter, where, size, sign)   \
-    ((where) < (size) ? iter_get(iter, where, size) : BITFLD_MAX * sign)
+    ((where) < (size) ? iter_get(iter, where, size) : BITFLD_MAX * sign * !(++iter))
 
 /* Takes:   iterator_t, size_t, size_t
  * Returns: bitfield_t (rvalue)
@@ -161,348 +155,529 @@
  * Ignores sign bit
  * Causes side-effects */
 #define iter_rgetif(iter, where, size, sign)  \
-    ((where) < (size) ? iter_rget(iter, where, size) : BITFLD_MAX * sign)
+    ((where) < (size) ? iter_rget(iter, where, size) : BITFLD_MAX * sign * !(--iter))
 
 // ---- Constants ----
 
-// Maximum number of bitfields an individual bitfield buffer may hold
-#define BITFLD_CT_MAX   (SIZE_MAX / sizeof(bitfield_t))
+/* Number of bits within a bitfield */
+#define BITFLD_BITS     (sizeof(bitfield_t) * 8)
 
-// Maximum value of a bitfield
+/* Maximum number of bitfields a bit buffer may hold */
+#define BITFLD_CT_MAX   (SIZE_MAX / (sizeof(bitfield_t) * 8))
+
+/* Maximum val of a bitfield */
 #define BITFLD_MAX      UINTMAX_MAX
 
-// For last field in an integer or float, the position of the sign bit
+/* Maximum number of bits stored within bit buffer */
+#define MAX_BITS        SIZE_MAX
+
+/* For last field in an integer or float, the position of the sign bit */
 #define SIGN_BIT        ((bitfield_t) 1 << sizeof(bitfield_t) * 8 - 1)
 
 typedef bitfield_t *iterator_t;
 
 typedef struct dyninfo_t {
-    const dynint_t *integer;
+    const dint_t *integer;
     const size_t size;
 } dyninfo_t;
 
-// ---- dynfloat_t Functions ----
-// TODO finish implementation
+export const dint_t *dint_maxbits = &(dint_t) {(bitfield_t[]) {0, MAX_BITS}, 2};
+export const dint_t *dint_one = &(dint_t) {(bitfield_t[]) {1}, 1};
+export const dint_t *dint_zero = &(dint_t) {(bitfield_t[]) {0}, 1};
 
-void dynfloat_free(dynfloat_t *value) {
-    free(value->whole);
-    free(value->decimal);
-    free(value);
+// ---- dflt_t Functions ----
+
+void dflt_clr(dflt_t *val) {
+    free(val->whole);
+    free(val->decimal);
 }
-dynfloat_t *dynfloat_copy(const dynfloat_t *restrict value) {
-    if (!value)
+dflt_t *dflt_cpy(const dflt_t *restrict val) {
+    if (!val)
         error(EINVAL, NULL);
 
-    dynfloat_t *copy = malloc(sizeof(dynfloat_t));
+    dflt_t *copy = malloc(sizeof(dflt_t));
 
     if (!copy) // malloc() fails
         return NULL;
-    copy->whole = malloc(value->wsize * sizeof(bitfield_t));
-    copy->decimal = malloc(value->dsize * sizeof(bitfield_t));
+    copy->whole = malloc(val->wsize * sizeof(bitfield_t));
+    copy->decimal = malloc(val->dsize * sizeof(bitfield_t));
     if (copy->whole || copy->decimal)  // malloc() fails
         return NULL;
-    copy->wsize = value->wsize;
-    copy->dsize = value->dsize;
+    copy->wsize = val->wsize;
+    copy->dsize = val->dsize;
     return copy;
 }
-dynfloat_t *dynfloat_new(void) {
-    dynfloat_t *new_float = malloc(sizeof(dynfloat_t));
 
-    if (!new_float)    // malloc() fails
-        return NULL;
-    new_float->whole =
-      calloc(new_float->wsize = 2, 2 * sizeof(bitfield_t));
-    new_float->decimal =
-      calloc(new_float->dsize = 2, 2 * sizeof(bitfield_t));
-    if (!new_float->whole || !new_float->decimal)  // calloc() fails
-        return NULL;
-    return new_float;
-}
+// ---- dint_t ----
 
-// ---- dynint_t Functions ----
-// TODO finish implementation
+// -- Static --
 
-/* Returns struct containing information
- * Pertains to the integer with the most significant bits */
-static const dynint_t *dynint_maxsig(const dynint_t *value1, const dynint_t *value2) {
-    const bool sign1 = dynint_sign(value1), sign2 = dynint_sign(value2);
-    const size_t size1 = value1->size, size2 = value2->size;
-    const bitfield_t unalloc1 = BITFLD_MAX * sign1, unalloc2 = BITFLD_MAX * sign2;
-    iterator_t iter1 = value1->bits, iter2 = value2->bits;
+// Returns integer with most significant bits
+static const dint_t *dint_maxsig(const dint_t *val1, const dint_t *val2) {
+    const dint_t *maxsz = dint_maxsz(val1, val2);
+    const dint_t *min = ptr_sub(ptr_add(val1, val2), maxsz), *max = maxsz;
+    iterator_t min_iter = min->bits + (min->size - 1),
+      max_iter = max->bits + (max->size - 1);
 
-    for (size_t i = 0;; ++i) {
-        if (iter_nextif(iter1, i, size1, sign1) == unalloc1)
-            return value2;
-        if (iter_nextif(iter2, i, size2, sign2) == unalloc2)
-            return value1;
+    for (size_t i = max->size - 1, lim = min->size; i >= lim; --i) {
+        if (iter_rnext(max_iter))
+            return max == val1 ? val1 : val2;
+    }
+    for (size_t i = min->size - 1;; --i) {
+        if (*max_iter > *min_iter)
+            return max == val1 ? val1 : val2;
+        if (iter_rnext(max_iter) < iter_rnext(min_iter))
+            return min == val1 ? val1 : val2;
+        if (!i)
+            return val1;
     }
 }
 
-/* Returns struct containing information
- * Pertains to the integer with the least significant bits */
-static const dynint_t *dynint_minsig(const dynint_t *value1, const dynint_t *value2) {
-    const bool sign1 = dynint_sign(value1), sign2 = dynint_sign(value2);
-    const size_t size1 = value1->size, size2 = value2->size;
-    const bitfield_t unalloc1 = BITFLD_MAX * sign1, unalloc2 = BITFLD_MAX * sign2;
-    iterator_t iter1 = value1->bits, iter2 = value2->bits;
+// Returns integer with least significant bits
+static const dint_t *dint_minsig(const dint_t *val1, const dint_t *val2) {
+    const dint_t *maxsz = dint_maxsz(val1, val2);
+    const dint_t *min = ptr_sub(ptr_add(val1, val2), maxsz), *max = maxsz;
+    iterator_t min_iter = min->bits + (min->size - 1),
+      max_iter = max->bits + (max->size - 1);
 
-    for (size_t i = 0;; ++i) {
-        if (iter_nextif(iter1, i, size1, sign1) == unalloc1)
-            return value1;
-        if (iter_nextif(iter2, i, size2, sign2) == unalloc2)
-            return value2;
+    for (size_t i = max->size - 1, lim = min->size; i >= lim; --i) {
+        if (iter_rnext(max_iter))
+            return min == val1 ? val1 : val2;
+    }
+    for (size_t i = min->size - 1;; --i) {
+        if (*max_iter > *min_iter)
+            return min == val1 ? val1 : val2;
+        if (iter_rnext(max_iter) < iter_rnext(min_iter))
+            return max == val1 ? val1 : val2;
+        if (!i)
+            return val2;  // Different result for equals
     }
 }
 
-dynint_t *dynint_add(const dynint_t *value1, const dynint_t *value2) {
-    if (!value1 || !value2)
-        error(EINVAL, NULL);
-    return dynint_addeq(dynint_copy(dynint_maxsig(value1, value2)),
-      dynint_minsig(value1, value2));
+// Returns padding between most significant 1 bits and end of bitfield, in bits
+static unsigned bitfld_pad(bitfield_t bits) {
+    unsigned ct = 0;
+
+    while (bits) {
+        bits >>= 1;
+        ++ct;
+    }
+    return BITFLD_BITS - ct;
 }
-#include <stdio.h>
-#include <numsys.h>
-dynint_t *dynint_addeq(dynint_t *target, const dynint_t *value) {
-    if (!target || !value)
+
+// Returns padding between most significant 1 bit and end of bit buffer, in bits
+static size_t dint_pad(const dint_t *val) {
+    iterator_t iter = val->bits + (val->size - 1);
+
+    for (size_t i = 0, lim = val->size; i < lim; ++i) {
+        if (*iter)
+            return i * BITFLD_BITS + bitfld_pad(*iter);
+        --iter;
+    }
+    return val->size * BITFLD_BITS;    // Integer equals 0
+}
+
+static dint_t *dint_ext(dint_t *target, size_t resize) {
+    if (resize > BITFLD_CT_MAX) // Integer too large
+        error(ERANGE, NULL);
+
+    const bool is_signed = dint_isneg(target);
+
+    target->bits = realloc(target->bits, resize * sizeof(bitfield_t));
+    if (!target->bits)  // realloc() fails
+        return NULL;
+    memset(target->bits + target->size, ~0 * is_signed, resize - target->size);
+    target->size = resize;
+    return target;
+}
+
+// -- Basic Utilities --
+
+export int dint_cmp(const dint_t *val1, const dint_t *val2) {
+    if (!val1 || !val2)
+        error(EINVAL, 2);
+
+    const bool sign1 = dint_isneg(val1), sign2 = dint_isneg(val2);
+
+    if (sign1 ^ sign2)
+        return sign1 ? -1 : 1;
+
+    int cmpval;
+    const size_t final = dint_maxsz(val1, val2)->size - 1,
+      size1 = val1->size, size2 = val2->size;
+    iterator_t iter1 = val1->bits + final, iter2 = val2->bits + final;
+
+    for (size_t i = final;; --i) {
+        cmpval =
+            (iter_peek(iter1, i, size1, sign1) > iter_peek(iter2, i, size2, sign2)) -
+            (iter_rnextif(iter1, i, size1, sign1) < iter_rnextif(iter2, i, size2, sign2));
+        if (cmpval)    return sign1 ? -cmpval : cmpval;
+        if (!i)         return 0;
+    }
+}
+export void dint_clr(dint_t *restrict val) {
+    if (val)
+        free(val->bits);
+    val->bits = NULL;   // Prevent double free
+}
+export dint_t *dint_cpy(const dint_t *restrict val) {
+    if (!val)
         error(EINVAL, NULL);
 
-    const dynint_t *max_sig = dynint_maxsig(target, value);
+    dint_t *copy = coll_dqueue(malloc(sizeof(dint_t)), dint_clr);
 
-    // Append bitfield as overflow buffer, if needed
-    if (target->size < max_sig->size + (dynint_final(max_sig) != dynint_unalloc(max_sig))
-      && !dynint_realloc(target, max_sig->size))
-        return NULL;    // dynint_realloc() fails
+    if (!copy)  // malloc() fails
+        return NULL;
+
+    copy->bits = malloc(val->size * sizeof(bitfield_t));
+    if (!copy->bits)    // malloc() fails
+        return NULL;
+    memcpy(copy->bits, val->bits, val->size * sizeof(bitfield_t));
+    copy->size = val->size;
+    return copy;
+}
+export dint_t *dint_eq(dint_t *target, const dint_t *val) {
+    if (!target || !val)
+        error(EINVAL, NULL);
+    if (target->size < val->size) {
+        free(target->bits);
+        return dint_initdi(target, val);
+    }
+    memcpy(target->bits, val->bits, val->size * sizeof(bitfield_t));
+    memset(target->bits + val->size, ~0 * dint_isneg(val),
+      (target->size - val->size) * sizeof(bitfield_t));
+    return target;
+}
+export dint_t *dint_eqdf(dint_t *target, const dflt_t *val) {
+    if (!target || !val)
+        error(EINVAL, NULL);
+    // TODO finish implementation
+}
+export dint_t *dint_eqs(dint_t *target, intmax_t val) {
+    if (!target)
+        error(EINVAL, NULL);
+    memcpy(target->bits, &val, sizeof(bitfield_t));
+    memset(target->bits + 1, ~0 * (val < 0),
+      (target->size - 1) * sizeof(bitfield_t));
+    return target;
+}
+export dint_t *dint_equ(dint_t *target, uintmax_t val) {
+    if (!target)
+        error(EINVAL, NULL);
+    memcpy(target->bits, &val, sizeof(bitfield_t));
+    memset(target->bits + 1, 0, (target->size - 1) * sizeof(bitfield_t));
+    return target;
+}
+export dint_t *dint_init(dint_t *target) {
+    if (!target)
+        error(EINVAL, NULL);
+    target->bits = calloc(target->size = 2, 2 * sizeof(bitfield_t));
+    if (!target->bits)  // calloc() fails
+        return NULL;
+    return target;
+}
+export dint_t *dint_initdf(dint_t *target, const dflt_t *val) {
+    if (!target || !val)
+        error(EINVAL, NULL);
+    // TODO finish implementation
+}
+export dint_t *dint_initdi(dint_t *target, const dint_t *val) {
+    if (!target || !val)
+        error(EINVAL, NULL);
+    target->bits = malloc((target->size = val->size) * sizeof(bitfield_t));
+    if (!target->bits)  // malloc() fails
+        return NULL;
+    memcpy(target->bits, val->bits, val->size * sizeof(bitfield_t));
+    return target;
+}
+export dint_t *dint_inits(dint_t *target, intmax_t val) {
+    if (!target)
+        error(EINVAL, NULL);
+    target->bits = malloc((target->size = 2) * sizeof(bitfield_t));
+    if (!target->bits)  // malloc() fails
+        return NULL;
+    target->bits[1] = BITFLD_MAX * !!(val & SIGN_BIT);
+    target->bits[0] = val;
+    return target;
+}
+export dint_t *dint_initu(dint_t *target, uintmax_t val) {
+    if (!target)
+        error(EINVAL, NULL);
+    target->bits = malloc((target->size = 2) * sizeof(bitfield_t));
+    if (!target->bits)  // malloc() fails
+        return NULL;
+    target->bits[1] = 0;
+    target->bits[0] = val;
+    return target;
+}
+export bool dint_isneg(const dint_t *val) {
+    return val && val->bits[val->size - 1] & SIGN_BIT;
+}
+
+// -- Basic Arithmetic --
+
+export dint_t *dint_abs(const dint_t *val) {
+    return dint_isneg(val) ? dint_neg(val) : dint_cpy(val);
+}
+export dint_t *dint_abseq(dint_t *target) {
+    return dint_isneg(target) ? dint_negeq(target) : target;
+}
+export dint_t *dint_addeq(dint_t *target, const dint_t *val) {
+    if (!target || !val)
+        error(EINVAL, NULL);
+
+    const dint_t *maxsig = dint_maxsig(target, val);
+
+    if (target->size < maxsig->size + (dint_final(maxsig) != dint_unalloc(maxsig))
+      && !dint_ext(target, maxsig->size))   // Append bitfield as overflow, if needed
+        return NULL;    // dint_ext() fails
 
     bool swp, overflow = false;
-    const bool target_sign = dynint_sign(value), val_sign = dynint_sign(value);
-    const size_t target_sz = target->size, val_sz = value->size;
-    iterator_t target_iter = target->bits, val_iter = value->bits;
+    const bool target_sign = dint_isneg(target), val_sign = dint_isneg(val);
+    const size_t val_sz = val->size;
+    iterator_t target_iter = target->bits, val_iter = val->bits;
 
     for (size_t i = 0, lim = target->size; i < lim; ++i) {
         swp = *target_iter > BITFLD_MAX - *val_iter ||
           *val_iter > BITFLD_MAX - *target_iter;
-
-        /* "A computation involving unsigned operands can never overflow"
-         *  -- C11 Standard, 6.2.5 (9) */
-
-        //## BEGIN DEBUG ##
-        printf(
-          "%s + %s (swp = %d, overflow = %d) =\n%lu + %lu =\n",
-          numsys_utostring(*target_iter, 2), numsys_utostring(*val_iter, 2), swp, overflow, *target_iter, *val_iter
-        );
-        //### END DEBUG ###
-
-        *target_iter = (*target_iter & (~SIGN_BIT | SIGN_BIT * (i != target_sz - 1))) + iter_nextif(val_iter, i, val_sz, val_sign) + overflow;
-
-        //## BEGIN DEBUG ##
-        printf("%s\n%lu\n\n", numsys_utostring(*target_iter, 2), *target_iter);
-        //### END DEBUG ###
-
+        *target_iter = *target_iter +
+          iter_nextif(val_iter, i, val_sz, val_sign) + overflow;
         ++target_iter;
         overflow = swp;
     }
     return target;
 }
-dynint_t *dynint_abs(const dynint_t *restrict value) {
-    if (!value)
-        error(EINVAL, NULL);
-    return dynint_abseq(dynint_copy(value));    // Handles dynint_copy() failure
-}
-dynint_t *dynint_abseq(dynint_t *value) {
-    if (!value)
-        error(EINVAL, NULL);
-    return dynint_sign(value) ? dynint_negeq(value) : value;
-}
-dynint_t *dynint_and(const dynint_t *value1, const dynint_t *value2) {
-    if (!value1 || !value2)
-        error(EINVAL, NULL);
-    return dynint_andeq(dynint_copy(dynint_minsz(value1, value2)),
-      dynint_maxsz(value1, value2));
-}
-dynint_t *dynint_andeq(dynint_t *target, const dynint_t *value) {
-    if (!target || !value)
+export dint_t *dint_andeq(dint_t *target, const dint_t *val) {
+    if (!target || !val)
         error(EINVAL, NULL);
 
-    iterator_t target_iter = target->bits, val_iter = value->bits;
+    iterator_t target_iter = target->bits, val_iter = val->bits;
 
-    for (size_t i = 0, lim = dynint_minsz(target, value)->size; i < lim; ++i)
+    for (size_t i = 0, lim = dint_minsz(target, val)->size; i < lim; ++i)
         iter_next(target_iter) |= iter_next(val_iter);
     return target; 
 }
-int dynint_cmp(const dynint_t *value1, const dynint_t *value2) {    // TODO finish
-    if (!value1 || !value2)
-        error(EINVAL, 2);
-
-    const bool sign1 = dynint_sign(value1), sign2 = dynint_sign(value2);
-
-    if (sign1 ^ sign2)
-        return sign1 ? -1 : 1;
-
-    int cmp_val;
-    const size_t final = dynint_maxsz(value1, value2)->size - 1,
-      size1 = value1->size, size2 = value2->size;
-    iterator_t iter1 = value1->bits + final, iter2 = value2->bits + final;
-
-    for (size_t i = final;; --i) {
-        cmp_val =
-            (iter_peek(iter1, i, size1, sign1) & ~SIGN_BIT >
-              iter_peek(iter2, i, size2, sign2) & ~SIGN_BIT) -
-            (iter_getif(iter1, i, size1, sign1) < iter_getif(iter2, i, size2, sign2));
-        if (!cmp_val)   return cmp_val;
-        if (!i)         return 0;
-    }
-}
-dynint_t *dynint_copy(const dynint_t *restrict value) {
-    if (!value)
-        error(EINVAL, NULL);
-
-    dynint_t *copy = malloc(sizeof(dynint_t));
-
-    if (!copy) // malloc() fails
-        return NULL;
-    copy->bits = malloc(value->size * sizeof(bitfield_t));
-    if (!copy->bits)    // malloc() fails
-        return NULL;
-    memcpy(copy->bits, value->bits, value->size * sizeof(bitfield_t));
-    copy->size = value->size;
-    return copy;
-}
-#define dynint_clear(value) ((value) ? free((value)->bits) : NULL)
-dynint_t *dynint_init(dynint_t *target) {
-    if (!target)
-        error(EINVAL, NULL);
-    target->bits = calloc(target->size = 2, 2 * sizeof(bitfield_t));
-    if (!target->bits)    // calloc() fails
-        return NULL;
-    return target;
-}
-dynint_t *dynint_initi(dynint_t *target, bitfield_t bits) {
-    if (!target)
-        error(EINVAL, NULL);
-    target->bits = malloc((target->size = 2) * sizeof(bitfield_t));
-    if (!target->bits)    // malloc() fails
-        return NULL;
-    target->bits[1] = BITFLD_MAX * !!(bits & SIGN_BIT);
-    target->bits[0] = bits;
-    return target;
-}
-dynint_t *dynint_initui(dynint_t *target, bitfield_t bits) {
-    if (!target)
-        error(EINVAL, NULL);
-    target->bits = malloc((target->size = 2) * sizeof(bitfield_t));
-    if (!target->bits)    // malloc() fails
-        return NULL;
-    target->bits[1] = 0;
-    target->bits[0] = bits;
-    return target;
-}
-dynint_t *dynint_initdi(dynint_t *target, const dynint_t *integer) {
-    if (!target || !integer)
-        error(EINVAL, NULL);
-}
-dynint_t *dynint_initdf(dynint_t *target, const dynfloat_t *floating) {
-    if (!target || !floating)
-        error(EINVAL, NULL);
-}
-#define dynint_new()    dynint_init(malloc(sizeof(dynint_t)))
-dynint_t *dynint_not(const dynint_t *value) {
-    if (!value)
-        error(EINVAL, NULL);
-    return dynint_noteq(dynint_copy(value));
-}
-dynint_t *dynint_noteq(dynint_t *target) {
+export dint_t *dint_noteq(dint_t *target) {
     if (!target)
         error(EINVAL, NULL);
 
     iterator_t iter = target->bits;
 
     for (size_t i = 0, lim = target->size; i < lim; ++i) {
-
-        /* "The evaluations of the operands are unsequenced."
-         *  --  C11 Standard, 6.5.16 (3) */
         *iter = ~(*iter);
         ++iter;
-        
     }
     return target;
 }
-dynint_t *dynint_or(const dynint_t *value1, const dynint_t *value2) {
-    if (!value1 || !value2)
+export dint_t *dint_oreq(dint_t *target, const dint_t *val) {
+    if (!target || !val)
         error(EINVAL, NULL);
-    return dynint_oreq(dynint_copy(dynint_maxsz(value1, value2)),
-      dynint_minsz(value1, value2));
-}
-dynint_t *dynint_oreq(dynint_t *target, const dynint_t *value) {
-    if (!target || !value)
-        error(EINVAL, NULL);
-    if (target->size < value->size && !dynint_realloc(target, value->size))
-        return NULL;    // dynint_realloc() fails
+    if (target->size < val->size && !dint_ext(target, val->size))
+        return NULL;    // dint_ext() fails
 
-    const bool val_sign = dynint_sign(value);
-    const size_t val_sz = value->size;
-    iterator_t target_iter = target->bits, val_iter = value->bits;
+    const bool val_sign = dint_isneg(val);
+    const size_t val_sz = val->size;
+    iterator_t target_iter = target->bits, val_iter = val->bits;
 
     for (size_t i = 0, lim = target->size; i < lim; ++i)
         iter_next(target_iter) |= iter_nextif(val_iter, i, val_sz, val_sign);
     return target; 
 }
-dynint_t *dynint_sub(const dynint_t *value1, const dynint_t *value2) {
-    if (!value1 || !value2)
+export dint_t *dint_xoreq(dint_t *target, const dint_t *val) {
+    if (!target || !val)
         error(EINVAL, NULL);
-    return dynint_subeq(dynint_copy(dynint_maxsig(value1, value2)),
-      dynint_minsig(value1, value2));
-}
-dynint_t *dynint_subeq(dynint_t *target, const dynint_t *value) {
-    if (!target || !value)
-        error(EINVAL, NULL);
+    if (target->size < val->size && !dint_ext(target, val->size))
+        return NULL;    // dint_ext() fails
 
-    dynint_t *copy = dynint_negeq(dynint_copy(value));
-
-    if (!copy)  // dynint_copy() fails
-        return NULL;
-    dynint_addeq(target, copy);
-    dynint_clear(copy);
-    free(copy);
-    return target;
-}
-dynint_t *dynint_xor(const dynint_t *value1, const dynint_t *value2) {
-    if (!value1 || !value2)
-        error(EINVAL, NULL);
-    return dynint_xoreq(dynint_copy(dynint_maxsz(value1, value2)),
-      dynint_minsz(value1, value2));
-}
-dynint_t *dynint_xoreq(dynint_t *target, const dynint_t *value) {
-    if (!target || !value)
-        error(EINVAL, NULL);
-    if (target->size < value->size && !dynint_realloc(target, value->size))
-        return NULL;    // dynint_realloc() fails
-
-    const bool val_sign = dynint_sign(value);
-    const size_t val_sz = value->size;
-    iterator_t target_iter = target->bits, val_iter = value->bits;
+    const bool val_sign = dint_isneg(val);
+    const size_t val_sz = val->size;
+    iterator_t target_iter = target->bits, val_iter = val->bits;
 
     for (size_t i = 0, lim = target->size; i < lim; ++i)
         iter_next(target_iter) ^= iter_nextif(val_iter, i, val_sz, val_sign);
     return target;
 }
+export dint_t *dint_muleq(dint_t *target, const dint_t *val) {
+    if (!target || !val)
+        error(EINVAL, NULL);
+    if (!dint_cmp(target, dint_zero) || !dint_cmp(val, dint_zero))
+        return dint_eq(target, dint_zero);
 
-// ---- Testing ----
+    const dint_t *maxsig = dint_maxsig(target, val);
+    dint_t *min = dint_abs(ptr_sub(ptr_add(target, val), maxsig)),
+      *max = dint_abs(maxsig);
 
-#include <stdio.h>
-#include <numsys.h>
+    if (!min || !max)   // dint_abs() fails
+        return NULL;
+    if (dint_cmp(min, dint_maxbits) > 0)    // Shift overflow
+        error(ERANGE, NULL);
 
-int main(void) {
-    dynint_t num1, num2;
-    dynint_initi(&num1, INTMAX_MIN +1);
-    dynint_initi(&num2, -5555);
+    const bool negate = dint_isneg(target) ^ dint_isneg(val);
 
-    dynint_addeq(&num1, &num2);
-    for (size_t i = num1.size - 1;; --i) {
-        printf("%s ", numsys_utostring(num1.bits[i], 2));
-        if (!i)
-            break;
+    if (dint_cmp(min, dint_one) && dint_cmp(max, dint_one)) {
+        dint_t *buf = dint_cpy(max);
+
+        if (min->bits[0])
+            dint_lshifteq(max, min->bits[0] / 2);
+        if (min->bits[0] & 1)   // Odd multiplicand
+            max = dint_addeq(max, buf); // Assigns NULL on error
     }
-    dynint_clear(&num1);
-    dynint_clear(&num2);
-    return 0;
+    if (!dint_eq(target, max))  // dint_eq() fails
+        return NULL;
+    return negate ? dint_negeq(target) : target;    
+}
+export dint_t *dint_diveq(dint_t *target, const dint_t *val) {
+    if (!target || !val)
+        error(EINVAL, NULL);
+    if (!dint_cmp(val, dint_zero))    // Denominator is 0
+        error(EDOM, NULL);
+    if (!dint_cmp(target, dint_zero))   // Numerator is 0
+        return target;
+    switch (dint_cmp(target, val)) {
+    case -1:    return dint_eq(target, dint_zero);  // Numerator < Denominator
+    case  0:    return dint_eq(target, dint_one);   // Numerator = Denominator
+    }
+
+    dint_t *target_abs = dint_abs(target), *val_abs = dint_abs(val);
+    dint_t di_buf;
+
+    if (!target_abs || !val_abs)    // dint_abs() fails
+        return NULL;
+    if (target->size <= BITFLD_CT_MAX / 2 &&
+      !dint_initu(&di_buf, target->size * BITFLD_BITS * 2))  // dint_initu() fails
+        return NULL;
+
+    int cmpval = dint_cmp(val_abs, &di_buf);
+
+    dint_clr(&di_buf);
+    if (cmpval) // Right shift overflows entire integer
+        return dint_eq(target, dint_zero);
+
+    const bool negate = dint_isneg(target) ^ dint_isneg(val);
+
+    if (dint_cmp(val_abs, dint_one)) {
+        if (val_abs->bits[0] & 1) {    // Odd denominator
+            const size_t val_bits = val_abs->size * 8 - dint_pad(val);
+            size_t target_bits = target_abs->size * 8 - dint_pad(target_abs),
+              rem_bits = target_bits - val_bits;
+            dint_t remaining;
+
+            remaining.size = ceil_div(rem_bits, BITFLD_BITS);
+            remaining.bits = malloc(di_buf.size * sizeof(bitfield_t));
+            if (!remaining.bits)    // malloc() fails
+                return NULL;
+
+            static const unsigned char *rev_lookup = {
+              0x0, 0x8, 0x4, 0xC, 0x2, 0xA, 0x6, 0xE,
+              0x1, 0x9, 0x5, 0xD, 0x3, 0xb, 0x7, 0xF};
+            char cur_byte;
+            unsigned shift;
+            bitfield_t cur_bitfld, rev_bitfld = 0;
+            iterator_t target_iter = target_abs->bits + (target->size - 1);
+
+            for (size_t i = target->size - 1;; --i) {
+                if (!iter_rnext(target_iter)) {
+                    shift = bitfld_pad(*(target_iter + 1));
+                    break;
+                }
+            }
+            for (size_t i = 0, lim = remaining.size; i < lim; ++i) {
+                cur_bitfld = iter_rnext(target_iter);
+                for (size_t i = 0, lim = BITFLD_BITS; i < lim; i += 8) {
+                    cur_byte = cur_bitfld & (0xFFULL << i);
+                    rev_bitfld |= (bitfield_t) rev_lookup[(cur_byte >> i) & 0xF]
+                      << (lim - i - 1);
+                }
+                remaining.bits[i] = rev_bitfld;
+            }
+            if (!dint_rshifteq(target_abs, target_bits -= rem_bits)) {
+                dint_clr(&remaining);
+                return NULL;    // dint_rshifteq() fails
+            }
+            if (!dint_rshifteq(&remaining, shift)) {  // dint_rshifteq() fails
+                dint_clr(&remaining);
+                return NULL;
+            }
+            target_iter = target->bits;
+            for (size_t i = 0, lim = target->size; i < lim; ++i) {  // Get number of bits
+                if (iter_next(target_iter)) {
+                    --target_iter;
+                    target_bits = i * (*target_iter * 8) + bitfld_pad(*target_iter);
+                }
+            }
+            for (size_t i = shift;; ++i) {
+                /*  TODO finish
+
+                    shift = target_bits - val_bits;
+                    dint_lshifteq(target_abs, shift);
+                    target_bits += val_bits
+                    if (di_buf = dynint)
+                    dint_and(remaining, dint_r)
+                    dint_oreq(target_abs, *remaining & 1);
+                    remaining += !!(i % 8);
+                */
+            }
+            dint_clr(&remaining);
+            dint_clr(&di_buf);
+        } else
+            target_abs = dint_rshifteq(target_abs, val_abs->bits[0] / 2);
+        if (!dint_eq(target, target_abs))   // dint_eq() fails
+            return NULL;
+    }
+    return negate ? dint_negeq(target) : target;
+}
+export dint_t *dint_lshifteq(dint_t *target, size_t shift) {
+    if (!target)
+        error(EINVAL, NULL);
+
+    const size_t move = shift / BITFLD_BITS;
+    const size_t padding = dint_pad(target);
+
+    if (shift > padding) {
+        size_t add = (shift - padding) / BITFLD_BITS;
+
+        add += !!((shift - padding) % BITFLD_BITS);
+        if (target->size > BITFLD_CT_MAX - add - 1) // Result too large
+            error(ERANGE, NULL);
+        if (!dint_ext(target, target->size + add))
+            return NULL;    // dint_ext() fails
+    }
+
+    bitfield_t carry = 0, swp;
+    iterator_t iter = target->bits + move;
+
+    shift %= BITFLD_BITS;
+    memmove(target->bits + move, target->bits, (target->size - move) * sizeof(bitfield_t));
+    memset(target->bits, 0, move * sizeof(bitfield_t));
+    for (size_t i = move, lim = target->size; i < lim; ++i) {
+        swp = (*iter & ~(BITFLD_MAX >> shift)) >> BITFLD_BITS - shift ; // Get carry
+        *iter = (*iter << shift) | carry;   // Apply carry
+        carry = swp;
+        ++iter;
+    }
+    return target;
+}
+export dint_t *dint_rshifteq(dint_t *target, size_t shift) {
+    if (!target)
+        error(EINVAL, NULL);
+
+    const size_t move = shift / BITFLD_BITS;
+
+    if (move >= target->size)
+        return dint_eq(target, dint_zero);
+
+    bitfield_t carry = 0, swp;
+    iterator_t iter = target->bits + (target->size - 1);
+
+    shift %= BITFLD_BITS;
+    memmove(target->bits, target->bits + move, (target->size - move) * sizeof(bitfield_t));
+    memset(target->bits + (target->size - move), 0, move * sizeof(bitfield_t));
+    for (size_t i = target->size - move - 1;; --i) {
+        swp = (*iter & ~(BITFLD_MAX << shift)) << BITFLD_BITS - shift ; // Get carry
+        *iter = (*iter >> shift) | carry;   // Apply carry
+        carry = swp;
+        --iter;
+        if (!i)
+            return target;
+    }
 }

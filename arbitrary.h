@@ -1,52 +1,26 @@
-#ifndef ARBITRARY_H
-#define ARBITRARY_H
-#include <stddef.h>     // size_t
-#include <stdint.h>     // uint8_t
-#ifndef __cplusplus
-#include <stdbool.h>    // bool
-#endif
+#ifndef LADLE_ARBITRARY_H
+#define LADLE_ARBITRARY_H
+#include <stddef.h> // size_t
+#include <stdint.h> // uintmax_t
+#include <stdlib.h> // free(), malloc()
 
-// Ensures attribute portability
-#ifdef __GNUC__
-#define attribute(...)  __attribute__((__VA_ARGS__))
-#define FPCONV_INIT 0   // 'fpconv_init()' need not be called at start
-#else
-#define attribute(...)
-#define FPCONV_INIT 1   // 'fpconv_init()' MUST be called at start
-#endif  // glibc || libstdc++
-#ifdef _MSC_VER
-#define declspec(...)   __declspec(__VA_ARGS__)
-#else
-#define declspec(...)
-#endif  // MSVC
+#include <ladle/collect.h>
+#include <ladle/common/header.h>
 
-// Use implementation-specific 'restrict' for C++, if possible
-#ifdef __cplusplus
-#ifdef __GNUC__
-#define restrict    __restrict__
-#elif defined(_MSC_VER)
-#define restrict    __restrict
-#else
-#define restrict
-#endif
-#endif  // C++
+// ---- Constants ----
 
-#define dynint_neg(value)       dynint_negeq(dynint_copy(value))
-#define dynint_negeq(target)    dynint_addeq(dynint_noteq(target), dynint_one)
-
-// Floating-point rithmetic options
+// Floating-point arithmetic options
 typedef enum arithflag_t {
     AF_NULL,        // No flags
-    AF_ROUND = 64,  // Round to # of decimal places
+    AF_ROUND = 1,   // Round to # of decimal places
     AF_FLOOR = 128, // Floor result
     AF_CEIL  = 256  // Ceiling result
 } arithflag_t;
 
-/* Printing options
- * By default, ... */
+// Printing options
 typedef enum printflag_t {
     PF_NULL,        // No flags
-    PF_SIGF = 64,   // Determines # of significant figures
+    PF_SIGF = 1,    // Determines # of significant figures
     PF_FULL = 128,  // Print to full precision
     PF_SCIN = 256   // Always print in scientific notation
 } printflag_t;
@@ -55,44 +29,131 @@ typedef enum printflag_t {
 typedef uintmax_t bitfield_t;
 
 // Arbitrary-precision integer
-typedef struct dynint_t {
+typedef struct dint_t {
     bitfield_t *bits;
     size_t size;
-} dynint_t;
+} dint_t;
 
 // Arbitrary-precision floating-point number
-typedef struct dynfloat_t {
+typedef struct dflt_t {
     bitfield_t *whole, *decimal;
     size_t wsize, dsize;
-} dynfloat_t;
+} dflt_t;
 
-const dynint_t *dynint_one = &(dynint_t) {(bitfield_t[]) {1}, 1};
+import extern const dint_t *dint_one;
+import extern const dint_t *dint_zero;
 
-// ---- dynfloat_t Functions ----
+BEGIN
 
-void dynfloat_free(dynfloat_t *value);
-dynfloat_t *dynfloat_copy(const dynfloat_t *restrict value);
-dynfloat_t *dynfloat_new(void);
+// ---- dflt_t ----
 
-// ---- dynint_t Functions ----
+/* Takes:   void
+ * Returns: dflt_t * (rvalue)
+ *
+ * Returns pointer to heap-allocated floating-point number
+ * Returns NULL and sets errno on internal error */
+#define dflt_new()  dflt_init(malloc(sizeof(dflt_t)))
 
-dynint_t *dynint_add(const dynint_t *value1, const dynint_t *value2);
-dynint_t *dynint_addeq(dynint_t *target, const dynint_t *value);
-dynint_t *dynint_abs(const dynint_t *restrict value);
-dynint_t *dynint_abseq(dynint_t *value);
-dynint_t *dynint_and(const dynint_t *value1, const dynint_t *value2);
-dynint_t *dynint_andeq(dynint_t *target, const dynint_t *value);
-int dynint_cmp(const dynint_t *value1, const dynint_t *value2);
-dynint_t *dynint_copy(const dynint_t *restrict value);
-void dynint_free(dynint_t *value);
-dynint_t *dynint_new(void);
-dynint_t *dynint_not(const dynint_t *value);
-dynint_t *dynint_noteq(dynint_t *target);
-dynint_t *dynint_or(const dynint_t *value1, const dynint_t *value2);
-dynint_t *dynint_oreq(dynint_t *target, const dynint_t *value);
-dynint_t *dynint_sub(const dynint_t *value1, const dynint_t *value2);
-dynint_t *dynint_subeq(dynint_t *target, const dynint_t *value);
-dynint_t *dynint_xor(const dynint_t *value1, const dynint_t *value2);
-dynint_t *dynint_xoreq(dynint_t *target, const dynint_t *value);
+/* Frees memory within a floating-point number
+ * Does NOT free the number itself
+ * Numbers allocated on the heap must still be freed afterward */
+import void dflt_clr(dflt_t *val) nonnull noexcept;
 
-#endif
+/* Generates a copy of a floating-point number
+ * Returns NULL and sets errno on internal error */
+import dflt_t *dflt_cpy(const dflt_t *restricted val) nonnull noexcept queue;
+
+// ---- dint_t ----
+
+// -- Basic Utilities --
+
+/* Frees contents within an integer
+ * Must be called before free'ing if manually allocated */
+import void dint_clr(dint_t *restricted val) nonnull noexcept;
+
+/* Compares two integers
+ * Returns NULL and sets errno on internal error
+ *
+ * Case            Return
+ *  val1 < val2     -1
+ *  val1 > val2      1
+ *  val1 = val2      0 */
+import int dint_cmp(const dint_t *val1, const dint_t *val2) nonnull noexcept pure;
+
+/* Generates a copy of an integer
+ * Returns NULL and sets errno on internal error */
+import dint_t *dint_cpy(const dint_t *restricted val) nonnull noexcept queue;
+
+/* Assigns value to target
+ * Returns NULL and sets errno on internal error */
+import dint_t *dint_eq(dint_t *target, const dint_t *val) nonnull noexcept;
+import dint_t *dint_eqdf(dint_t *target, const dflt_t *val) nonnull noexcept;
+import dint_t *dint_eqs(dint_t *target, intmax_t val) nonnull noexcept;
+import dint_t *dint_equ(dint_t *target, uintmax_t val) nonnull noexcept;
+
+/* Readies integer for use
+ * Functions with two arguments assign an initial value to target
+ * Otherwise, value of target is set to 0
+ * Returns NULL and sets errno on internal error */
+import dint_t *dint_init(dint_t *target) nonnull noexcept;
+import dint_t *dint_initdf(dint_t *target, const dflt_t *val) nonnull noexcept;
+import dint_t *dint_initdi(dint_t *target, const dint_t *val) nonnull noexcept;
+import dint_t *dint_inits(dint_t *target, intmax_t val) nonnull noexcept;
+import dint_t *dint_initu(dint_t *target, uintmax_t val) nonnull noexcept;
+
+// Allocates automatically-free'd memory as well
+#define dint_new()      dint_init(coll_dqueue(malloc(sizeof(dint_t)), dint_clr))
+#define dint_newdf(val) dint_initdf(coll_dqueue(malloc(sizeof(dint_t)), dint_clr), val)
+#define dint_newdi(val) dint_initdi(coll_dqueue(malloc(sizeof(dint_t)), dint_clr), val)
+#define dint_news(val)  dint_inits(coll_dqueue(malloc(sizeof(dint_t)), dint_clr), val)
+#define dint_newu(val)  dint_initu(coll_dqueue(malloc(sizeof(dint_t)), dint_clr), val)
+
+// Returns true if integer is negative
+import bool dint_isneg(const dint_t *val) nonnull noexcept;
+
+// -- Basic Arithmetic --
+
+/* Returns result of arithmetic/bitwise operation on two integers
+ * Functions ending in '-eq' store result within target
+ * All other functions store result within heap-allocated integer copy
+ * Copies returned by such functions are automatically queued for deletion
+ * All macro definitions are guaranteed to cause no side-effects
+ * Returns NULL and sets errno on internal error */
+#define dint_add(val1, val2)    dint_addeq(dint_cpy(val1), val2)
+#define dint_and(val1, val2)    dint_andeq(dint_cpy(val1), val2)
+#define dint_neg(val)           dint_negeq(dint_cpy(val))
+#define dint_negeq(target)      dint_addeq(dint_noteq(target), dint_one)
+#define dint_or(val1, val2)     dint_oreq(dint_cpy(val1), val2)
+#define dint_not(val)           dint_noteq(dint_cpy(val))
+#define dint_sub(val1, val2)    dint_subeq(dint_cpy(val1), val2)
+#define dint_subeq(target, val) dint_addeq(target, dint_neg(val))
+#define dint_xor(val1, val2)    dint_xoreq(dint_cpy(val1), val2)
+
+import dint_t *dint_abs(const dint_t *val) nonnull noexcept;
+import dint_t *dint_abseq(dint_t *target) nonnull noexcept;
+import dint_t *dint_addeq(dint_t *target, const dint_t *val) nonnull noexcept;
+import dint_t *dint_andeq(dint_t *target, const dint_t *val) nonnull noexcept;
+import dint_t *dint_modeq(dint_t *target, const dint_t *val) nonnull noexcept;
+import dint_t *dint_noteq(dint_t *target) nonnull noexcept;
+import dint_t *dint_oreq(dint_t *target, const dint_t *val) nonnull noexcept;
+import dint_t *dint_xoreq(dint_t *target, const dint_t *val) nonnull noexcept;
+
+// Nonwhole results are truncated
+#define dint_div(val1, val2)   dint_diveq(dint_cpy(val1), val2)
+#define dint_mul(val1, val2)   dint_muleq(dint_cpy(val1), val2)
+
+import dint_t *dint_diveq(dint_t *target, const dint_t *val) nonnull noexcept;
+import dint_t *dint_muleq(dint_t *target, const dint_t *val) nonnull noexcept;
+
+/* Bits shifted right out-of-bounds will be saved
+ * Bits shifted left out-of-bounds, however, will not be */
+#define dint_lshift(val, shift) dint_lshifteq(dint_cpy(val), shift)
+#define dint_rshift(val, shift) dint_rshifteq(dint_cpy(val), shift)
+
+import dint_t *dint_lshifteq(dint_t *target, size_t shift) nonnull noexcept;
+import dint_t *dint_rshifteq(dint_t *dynint, size_t shift) nonnull noexcept;
+
+END
+
+#include <ladle/common/end_header.h>
+#endif  // #ifndef LADLE_ARBITRARY_H
